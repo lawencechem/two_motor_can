@@ -33,3 +33,6 @@ test_feedback\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h
 test_feedback\main.o: ../Core/Inc/can.h
 test_feedback\main.o: ../Core/Inc/gpio.h
 test_feedback\main.o: ../User/drv_can.h
+test_feedback\main.o: ../Core/Inc/dma.h
+test_feedback\main.o: ../Core/Inc/usart.h
+test_feedback\main.o: E:\keil5\keil5core\ARM\ARMCC\Bin\..\include\stdio.h

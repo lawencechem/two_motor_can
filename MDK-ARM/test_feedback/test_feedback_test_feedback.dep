@@ -32,7 +32,7 @@ I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h)(0x6A9E9A13
 I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr.h)(0x6A9E9A13)
 I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr_ex.h)(0x6A9E9A13)
 I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h)(0x6A9E9A13)
-F (../Core/Src/main.c)(0x6A9EC431)(--c99 -c --cpu Cortex-M4.fp.sp -g -O0 --apcs=interwork --split_sections -I ../Core/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I ../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I ../Drivers/CMSIS/Include -I ../User --cpp11-I.\RTE\_test_feedback-IE:\keil5\keil5pack\ARM\CMSIS\5.9.0\CMSIS\Core\Include-IE:\keil5\keil5pack\Keil\STM32F4xx_DFP\2.16.0\Drivers\CMSIS\Device\ST\STM32F4xx\Include-D__UVISION_VERSION="537" -D_RTE_ -DSTM32F427xx -D_RTE_ -DUSE_HAL_DRIVER -DSTM32F427xx-o test_feedback\main.o --omf_browse test_feedback\main.crf --depend test_feedback\main.d)
+F (../Core/Src/main.c)(0x6AB10BDA)(--c99 -c --cpu Cortex-M4.fp.sp -g -O0 --apcs=interwork --split_sections -I ../Core/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I ../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I ../Drivers/CMSIS/Include -I ../User --cpp11-I.\RTE\_test_feedback-IE:\keil5\keil5pack\ARM\CMSIS\5.9.0\CMSIS\Core\Include-IE:\keil5\keil5pack\Keil\STM32F4xx_DFP\2.16.0\Drivers\CMSIS\Device\ST\STM32F4xx\Include-D__UVISION_VERSION="537" -D_RTE_ -DSTM32F427xx -D_RTE_ -DUSE_HAL_DRIVER -DSTM32F427xx-o test_feedback\main.o --omf_browse test_feedback\main.crf --depend test_feedback\main.d)
 I (../Core/Inc/main.h)(0x6A9E9A14)
 I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h)(0x6A9E9A13)
 I (../Core/Inc/stm32f4xx_hal_conf.h)(0x6A9E9A14)
@@ -66,6 +66,9 @@ I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h)(0x6A9E9A13)
 I (../Core/Inc/can.h)(0x6A9E9A14)
 I (../Core/Inc/gpio.h)(0x6A9E9A14)
 I (../User/drv_can.h)(0x6A9E9A11)
+I (../Core/Inc/dma.h)(0x6A9E9A14)
+I (../Core/Inc/usart.h)(0x6A9E9A14)
+I (E:\keil5\keil5core\ARM\ARMCC\include\stdio.h)(0x60252374)
 F (../Core/Src/gpio.c)(0x6A9E9A14)(--c99 -c --cpu Cortex-M4.fp.sp -g -O0 --apcs=interwork --split_sections -I ../Core/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I ../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I ../Drivers/CMSIS/Include -I ../User --cpp11-I.\RTE\_test_feedback-IE:\keil5\keil5pack\ARM\CMSIS\5.9.0\CMSIS\Core\Include-IE:\keil5\keil5pack\Keil\STM32F4xx_DFP\2.16.0\Drivers\CMSIS\Device\ST\STM32F4xx\Include-D__UVISION_VERSION="537" -D_RTE_ -DSTM32F427xx -D_RTE_ -DUSE_HAL_DRIVER -DSTM32F427xx-o test_feedback\gpio.o --omf_browse test_feedback\gpio.crf --depend test_feedback\gpio.d)
 I (../Core/Inc/gpio.h)(0x6A9E9A14)
 I (../Core/Inc/main.h)(0x6A9E9A14)
@@ -162,7 +165,7 @@ I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_flash_ramfunc.h)(0x6A9E9A13
 I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr.h)(0x6A9E9A13)
 I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr_ex.h)(0x6A9E9A13)
 I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h)(0x6A9E9A13)
-F (../Core/Src/usart.c)(0x6A9E9A42)(--c99 -c --cpu Cortex-M4.fp.sp -g -O0 --apcs=interwork --split_sections -I ../Core/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I ../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I ../Drivers/CMSIS/Include -I ../User --cpp11-I.\RTE\_test_feedback-IE:\keil5\keil5pack\ARM\CMSIS\5.9.0\CMSIS\Core\Include-IE:\keil5\keil5pack\Keil\STM32F4xx_DFP\2.16.0\Drivers\CMSIS\Device\ST\STM32F4xx\Include-D__UVISION_VERSION="537" -D_RTE_ -DSTM32F427xx -D_RTE_ -DUSE_HAL_DRIVER -DSTM32F427xx-o test_feedback\usart.o --omf_browse test_feedback\usart.crf --depend test_feedback\usart.d)
+F (../Core/Src/usart.c)(0x6AA16A5B)(--c99 -c --cpu Cortex-M4.fp.sp -g -O0 --apcs=interwork --split_sections -I ../Core/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc -I ../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I ../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I ../Drivers/CMSIS/Include -I ../User --cpp11-I.\RTE\_test_feedback-IE:\keil5\keil5pack\ARM\CMSIS\5.9.0\CMSIS\Core\Include-IE:\keil5\keil5pack\Keil\STM32F4xx_DFP\2.16.0\Drivers\CMSIS\Device\ST\STM32F4xx\Include-D__UVISION_VERSION="537" -D_RTE_ -DSTM32F427xx -D_RTE_ -DUSE_HAL_DRIVER -DSTM32F427xx-o test_feedback\usart.o --omf_browse test_feedback\usart.crf --depend test_feedback\usart.d)
 I (../Core/Inc/usart.h)(0x6A9E9A14)
 I (../Core/Inc/main.h)(0x6A9E9A14)
 I (../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h)(0x6A9E9A13)
