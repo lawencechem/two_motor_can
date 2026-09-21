@@ -19,6 +19,11 @@
 
 /* Private variables ---------------------------------------------------------*/
 
+/* 诊断计数(定义在 main.c, 这里累加) */
+extern volatile uint32_t g_can_tx_ok;
+extern volatile uint32_t g_can_tx_fail;
+extern volatile uint32_t g_can_tx_waitful;
+
 Struct_CAN_Manage_Object CAN1_Manage_Object = {0};
 Struct_CAN_Manage_Object CAN2_Manage_Object = {0};
 
@@ -133,9 +138,23 @@ uint8_t CAN_Send_Data(CAN_HandleTypeDef *hcan, uint16_t ID, uint8_t *Data, uint1
 {
     CAN_TxHeaderTypeDef tx_header;
     uint32_t used_mailbox;
+    uint32_t t0;
 
     //检测传参是否正确
     assert_param(hcan != NULL);
+
+    /* 等一个空闲发送邮箱再发: CAN 只有 3 个邮箱, 主循环里两台电机的多条命令
+     * 会在几微秒内连发, 一帧在 1Mbps 上要 ~110us 才发完; 不等的话第 4 帧起
+     * 直接被丢弃(表现为后处理的那台电机命令丢失、慢半拍) */
+    t0 = HAL_GetTick();
+    while (HAL_CAN_GetTxMailboxesFreeLevel(hcan) == 0)
+    {
+        if (HAL_GetTick() - t0 > 5)
+        {
+            g_can_tx_waitful++;              /* 诊断: 等了 5ms 还是没空邮箱 */
+            break;
+        }
+    }
 
     tx_header.StdId = ID;
     tx_header.ExtId = 0;
@@ -143,7 +162,12 @@ uint8_t CAN_Send_Data(CAN_HandleTypeDef *hcan, uint16_t ID, uint8_t *Data, uint1
     tx_header.RTR = 0;
     tx_header.DLC = Length;
 
-    return (HAL_CAN_AddTxMessage(hcan, &tx_header, Data, &used_mailbox));
+    {
+        HAL_StatusTypeDef st = HAL_CAN_AddTxMessage(hcan, &tx_header, Data, &used_mailbox);
+        if (st == HAL_OK) g_can_tx_ok++;
+        else              g_can_tx_fail++;   /* 诊断: 帧被丢弃(邮箱满/总线错误) */
+        return (uint8_t)st;
+    }
 }
 
 /**
