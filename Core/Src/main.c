@@ -62,22 +62,28 @@ void Error_Handler(void);
 #define SETTLE_TOL_CNT          (16)   /* 16384/圈, ±16counts≈±0.35° */
 #define ARRIVE_MAX_MS           (30000)/* 有反馈时的到位最长时间 */
 #define NO_ACK_TIMEOUT_MS       (3000) /* 发目标后一直无任何回包 -> 判定没接电机, 跳走 */
-#define CMD_REPEAT_MS           (300)  /* 运动中周期性重发目标, 抗偶发丢帧/总线错误 */
+
+/* 轮询周期 —— 这一组原来是一张 k_tier[3][6] 档位表 + 在线切档开关,
+ * 现在只保留最省的那一档并写死在这里(要改周期就改这几个数、重新烧录)。
+ * 全部用十进制字面量: ARMCC 会把 #define 的名字和值写进 .debug_macinfo,
+ * LinkScope 扫到 0x???????? 会按 (值+1) 当地址读, 把界面顶掉 —— 别改成十六进制。 */
+#define POS_POLL_MS             (100)  /* 读位置周期; **只在运动中发**, 空闲一帧不发 */
+#define SPD_POLL_EVERY          (4)    /* 每 N 次位置回读, 换成一次 0xA2 读速度(仅曲线用) */
+#define RESEND_MS               (1000) /* 运动中重发 目标/保持松闸 的周期(绝不能是 0) */
+#define RD_PERIOD_MS            (2000) /* 参数回读周期(绝不能是 0, 原因见 mot_manager) */
 
 /* 自动随机(每台独立开关 g1_auto/g2_auto) */
 #define ENABLE_AUTO_RANDOM      (0)    /* 0=不做自动随机, 目标由 pos_cmd_deg 给 */
 #define AUTO_INTERVAL_MS        (2000)
-#define AUTO_START_DELAY_MS     (1500)
 #define AUTO_RANGE_DEG          (180)
 #define HOLD_ZERO_MS            (5000) /* 上电回零到位后, 先在0点保持5s再开始随机 */
 
 /* 主循环节拍 */
 #define LOOP_PERIOD_MS          (5)
-#define POS_POLL_MS             (20)   /* 定期 0xA3 读位置 */
 
 /* USART2 串口(1M 波特率): 上行回传 = VOFA+ JustFloat(不堆文本); 下行 = ASCII 指令控制 */
 #define UART_TX_PERIOD_MS       (20)   /* 回传周期(ms) */
-#define UART_TX_CHANNELS        (28)   /* JustFloat 通道数: 见下 uart_send_telemetry 注释 */
+#define UART_TX_CHANNELS        (18)   /* JustFloat 通道数: 见下 uart_send_telemetry 注释 */
 #define UART_RX_BUF_SIZE        (128)  /* DMA 空闲接收缓冲 */
 #define UART_ACC_SIZE           (120)  /* 下行行累积缓冲 */
 #define UART_CMD_MAX            (64)   /* 单条指令最大长度 */
@@ -101,9 +107,8 @@ void Error_Handler(void);
 static const uint32_t PERSIST_MAGIC = 0x0801C0DEu;
 
 /* ====== 在线调 PID(用 LinkScope 写变量即可, 每台一套) ======
- * 0xB6 位置环Kp  0xB7 位置环Ki  0xB8 速度环Kp  0xB9 速度环Ki (float, 断电不保存) */
-#define PID_POLL_MS             (300)   /* PID 下发/比较周期 */
-#define RD_PERIOD_MS            (100)   /* 参数回读: 每100ms只发一条, 一条一条轮询 */
+ * 0xB6 位置环Kp  0xB7 位置环Ki  0xB8 速度环Kp  0xB9 速度环Ki (float, 断电不保存)
+ * 参数回读(下发/比较)的周期 = RD_PERIOD_MS(2000ms, 一条一条轮询, 见 mot_manager)。 */
 
 /* USER CODE END PD */
 
@@ -179,36 +184,22 @@ volatile uint8_t g2_brk_invert = 0;                   /* 可写: 抱闸极性翻
 volatile float g2_cur_pos_kp = 0.0f, g2_cur_pos_ki = 0.0f, g2_cur_vel_kp = 0.0f, g2_cur_vel_ki = 0.0f;
 volatile float g2_cur_pos_lim_rpm = 0.0f, g2_cur_vel_lim_A = 0.0f;
 
-/* ================= CAN 层诊断(排查"两台一起发只有一台动") =================
- * 目的: 分清"我们的帧没发出去 / 电机没回 / 回了但没按命令做"。 */
-volatile uint8_t  g1_brk_sw     = 0xFF; /* 回读 0xCE 驱动器抱闸开关状态: 0断开 1闭合, 255=还没读到 */
-volatile uint8_t  g2_brk_sw     = 0xFF;
-volatile uint8_t  g1_rx_lastcmd = 0;    /* 该电机最后一次回包的[0]命令码(看它在回应什么) */
-volatile uint8_t  g2_rx_lastcmd = 0;
-volatile uint32_t g1_rx_ce      = 0;    /* 该电机对 0xCE(抱闸) 的应答条数 */
-volatile uint32_t g2_rx_ce      = 0;
-volatile uint32_t g1_rx_da      = 0;    /* 该电机对 0xDA(目标) 的应答条数 */
-volatile uint32_t g2_rx_da      = 0;
-volatile uint32_t g1_tx_ok      = 0;    /* 发给该电机且成功进邮箱的帧数 */
-volatile uint32_t g2_tx_ok      = 0;
-volatile uint32_t g1_tx_fail    = 0;    /* 发给该电机但被丢弃的帧数(邮箱满/总线错) */
-volatile uint32_t g2_tx_fail    = 0;
-volatile uint32_t g_can_tx_ok     = 0;  /* 全局: 发送成功 / 丢弃 / 等邮箱超时 */
-volatile uint32_t g_can_tx_fail   = 0;
-volatile uint32_t g_can_tx_waitful = 0;
-volatile uint32_t g_can_rx_unknown = 0; /* 收包 StdId 不是 1/2 的帧数(路由不上, 被丢弃) */
-volatile uint32_t g_can_esr = 0;        /* CAN1->ESR 原始值 */
-volatile uint32_t g_can_tec = 0;        /* 发送错误计数(>127 错误被动, 满 255 BUS-OFF) */
-volatile uint32_t g_can_rec = 0;        /* 接收错误计数 */
-volatile uint32_t g_can_err = 0;        /* HAL_CAN_GetError() */
-
 /* ---- 调试开关(不影响正常使用; 用来把"到底是哪一处改动起的作用"钉死) ----
  * g_dbg_frame_gap: 同一条驱动器相邻两帧的最小间隔(ms), 默认 1 = 正常。
- *                  改成 0 = 恢复"挤在一起连发"的老写法 → 故障应当复发。
- * g_dbg_burst_ce : 1 = 恢复"0xDA 目标 与 0xCE 松闸 同一拍连发"的老写法, 默认 0。
- * 改完下一拍就生效, 不用重新编译/烧录。做完对比记得改回 1 / 0。 */
+ *                  改成 0 = 恢复"挤在一起连发"的老写法 → 故障(两台一起发只有一台动)应当复发。
+ *                  【别删这一项】修复本体就在 can_send 里用这个值堵着。
+ * 改完下一拍就生效, 不用重新编译/烧录。做完对比记得改回 1。 */
 volatile uint32_t g_dbg_frame_gap = 1;
-volatile uint8_t  g_dbg_burst_ce  = 0;
+
+/* ====== 通信量策略(原来的 3 档档位表 + 在线切档开关已删除, 只留最省的那一档) ======
+ * 空闲时: 只有参数回读(RD_PERIOD_MS = 2000ms)一条, 每台 0.5 帧/秒;
+ *         位置/速度/状态回读**全部不发** —— 总线安静。
+ * 运动中: 位置 POS_POLL_MS = 100ms 一条(判到位必需), 每 4 条位置换一条速度(喂曲线),
+ *         目标/松闸 RESEND_MS = 1000ms 重发一次。
+ * 动作结束时补两帧: 一次 0xA2(把速度读回 0, 否则 gN_spd_rpm 冻在最后那个非零值上)
+ *                 + 一次 0xAE(刷新 gN_fault / gN_run_mode / gN_bus_v)。
+ * **不再有定时心跳** —— 驱动器上电即自使能, 本固件也没有"使能电机"的命令, 不需要保活。
+ * 想再切档就得改上面那组宏并重新烧录(在线切档用的 g_comm_tier / g_hb_ms / 串口 tN 都删了)。 */
 
 /* ============================================================
  * 每台电机的完整状态(含 ISR 写的反馈量)
@@ -226,11 +217,6 @@ typedef struct
     volatile int32_t  cfg_vmax_x100, cfg_iq_ma;        /* 回读 0xB2/0xB3 */
     volatile uint8_t  run_mode, fault;                 /* 回读 0xAE: 运行模式 / 故障码 */
     volatile uint16_t bus_v;                           /* 回读 0xAE: 母线电压(0.01V) */
-    volatile uint8_t  brk_sw;                          /* 回读 0xCE: 驱动器抱闸开关状态 */
-    volatile uint8_t  rx_lastcmd;                      /* 最后一次回包的命令码 */
-    volatile uint32_t rx_ce, rx_da;                    /* 对 0xCE / 0xDA 的应答条数 */
-    volatile uint32_t tx_ok, tx_fail;                  /* 发给本机的帧 成功 / 被丢弃 */
-    uint8_t stat_alt;                                  /* 0xAE / 0xCE 交替轮询相位 */
     uint8_t poll_idx;                                  /* 位置/速度轮询相位(每台独立!) */
     volatile uint8_t  f_d0, f_d1, f_b2, f_b3;          /* 是否已读到 D0/D1/B2/B3 */
     volatile uint8_t  f_pkp, f_pki, f_vkp, f_vki;      /* 是否已收到各自回读 */
@@ -242,6 +228,8 @@ typedef struct
     uint8_t c_pkp, c_pki, c_vkp, c_vki;   /* 是否已拷给 pid_* */
     uint8_t pid_loaded;                   /* 已把驱动现值复制给 pid_* (可安全开始写) */
     float pos_cmd_deg, last_cmd_deg;      /* 手动目标角(LinkScope 给) 及去抖 */
+    uint8_t want_move;                    /* 有待执行的移动请求(统一入口, 见 request_move) */
+    float   want_deg;                     /* 该请求的目标角(度) */
 
     /* ---- 主循环算/显示 ---- */
     int32_t  local_tgt, tgt_cnt, base_cnt;
@@ -255,7 +243,7 @@ typedef struct
     uint32_t move_cycles, move_timeouts;
 
     /* ---- 私有时序 ---- */
-    uint32_t st_t0, auto_next_ms, last_ack_cnt, last_poll_ms, last_rd_ms, last_stat_ms;
+    uint32_t st_t0, auto_next_ms, last_ack_cnt, last_poll_ms, last_rd_ms;
     uint32_t cmd_ms;                      /* 上次(重)发目标指令的时刻 */
     uint32_t brk_ms;                      /* 上次发松闸/抱闸指令的时刻 */
     int32_t  last_acc_x100, last_dec_x100;/* 上次下发的 加减速(x0.01rpm/s), 目标变就发 */
@@ -293,7 +281,8 @@ static int32_t rng_in_range(int32_t amp)
 
 /* ---------------- CAN/协议小工具 ---------------- */
 /* 对同一台驱动器, 相邻两帧必须隔开一点再发.
- * 依据: 官方 Demo 注释 + 本项目实测 —— "连发多条命令时驱动器只认第一条".
+ * 依据: **本项目实测**(A/B 对照确认) —— "连发多条命令时驱动器只认第一条".
+ * 注意: 官方协议文档和官方 Demo 源码里都**没有**这条规定, 是实测出来的现象.
  * 主循环里对一台电机可能在同一拍内连续下 参数/查询/目标/抱闸 好几帧,
  * 挤在一起时后面的会被驱动器忽略; 宁可慢 1ms, 也要保证每帧都被处理。
  * 间隔值放在 g_dbg_frame_gap(默认 1ms), 方便在线做对比实验。 */
@@ -301,8 +290,6 @@ static uint16_t g_last_tx_id = 0xFFFFu;
 
 static void can_send(uint16_t sid, const uint8_t *d, uint8_t len)
 {
-    uint8_t st;
-    uint8_t i;
     uint32_t t0;
     uint32_t gap = g_dbg_frame_gap;
 
@@ -314,20 +301,9 @@ static void can_send(uint16_t sid, const uint8_t *d, uint8_t len)
         while (HAL_GetTick() - t0 < gap) { }
     }
 
-    st = CAN_Send_Data(&hcan1, sid, (uint8_t *)d, len);
+    /* 返回值不查: "邮箱满"的情况 CAN_Send_Data 内部已经等过(最多 5ms), 见 drv_can.c */
+    CAN_Send_Data(&hcan1, sid, (uint8_t *)d, len);
     g_last_tx_id = sid;
-
-    /* 诊断: 把"这一帧到底发出去了没有"记到对应电机头上.
-     * tx_fail 一直涨 = 帧被静默丢弃, 那台电机根本没收到命令 */
-    for (i = 0; i < MOT_COUNT; i++)
-    {
-        if (sid == mot[i].addr)
-        {
-            if (st == HAL_OK) mot[i].tx_ok++;
-            else              mot[i].tx_fail++;
-            break;
-        }
-    }
 }
 
 static void put_i32le(uint8_t *p, int32_t v)
@@ -386,12 +362,6 @@ static void ze300_read_status(uint8_t addr)
 {
     uint8_t d[1] = {0xAE};
     can_send(addr, d, 1);
-}
-/* 0xCE 0xFF = 读抱闸开关输出当前状态(驱动器自己的回读, 用来确认命令是否执行了) */
-static void ze300_read_brake(uint8_t addr)
-{
-    uint8_t d[2] = {0xCE, 0xFF};
-    can_send(addr, d, 2);
 }
 /* 0xCE 抱闸. close=1 表示"合闸(抱住)", close=0 表示"松闸(可转)".
  * 注意: 官方协议是 0x00=抱闸失能(断开) / 0x01=抱闸使能(闭合), 不同驱动器/接线
@@ -558,8 +528,19 @@ static void mot_st_machine(MOT *m)
     case 0:                             /* 空闲 */
         if (m->auto_on && (int32_t)(t - m->auto_next_ms) >= 0)
         {
-            int32_t local = rng_in_range(AUTO_RANGE_DEG) * 16384 / 360; /* 相对零点随机(度) */
-            start_move(m, local);        /* 只给局部角, 由 start_move 转成小增量命令 */
+            /* 空闲时不轮询位置(见 POS_POLL_MS), now_cnt 可能已经旧了, 而 start_move 会拿它
+             * 发"保持当前位置"那帧 —— 若这期间被人手拧过, 就会顶着闭合的抱闸顶 60ms。
+             * 位置不新鲜就先补一帧 0xA3, 推迟一拍再启动(回包 ~200us, 一拍 5ms 够)。 */
+            if ((t - m->last_poll_ms) < 500u)
+            {
+                int32_t local = rng_in_range(AUTO_RANGE_DEG) * 16384 / 360; /* 相对零点随机(度) */
+                start_move(m, local);    /* 只给局部角, 由 start_move 转成小增量命令 */
+            }
+            else
+            {
+                m->last_poll_ms = t;
+                ze300_read_pos(m->addr);
+            }
         }
         break;
 
@@ -592,26 +573,21 @@ static void mot_st_machine(MOT *m)
     case 3:                             /* 运动中 */
     {
         int32_t err;
+        uint16_t per = RESEND_MS;
 
         /* 周期性重发目标 / 保持松闸: 单帧丢失或总线偶发错误也不至于刹死不动.
-         * 正常写法: 两者**错开发送**, 不同一拍连发两帧(驱动器对连发帧只认第一条);
-         * g_dbg_burst_ce=1 则恢复老的"同一拍连发两帧", 用于对比实验 */
-        if (g_dbg_burst_ce)
-        {
-            if ((int32_t)(t - m->cmd_ms) >= (int32_t)CMD_REPEAT_MS)
-            {
-                ze300_target_cnt(m->addr, m->tgt_cnt);
-                brake(m, 0);
-                m->cmd_ms = t;
-                m->brk_ms = t;
-            }
-        }
-        else if ((int32_t)(t - m->cmd_ms) >= (int32_t)CMD_REPEAT_MS)
+         * 两者**错开发送**, 绝不在同一拍连发两帧 —— 驱动器对同一台的连发帧只认第一条,
+         * 这正是当初"两台一起发只有一台动"的病根, 别再改回去。
+         *
+         * 【为什么周期绝不为 0】目标帧若丢了, 位置轮询仍在跑 -> rx_cnt 一直涨 ->
+         * 下面"无回包"分支永远不触发 -> 一直卡到 ARRIVE_MAX_MS(30秒)才兜底。
+         * 这里 1 秒一帧就是买这个。 */
+        if ((int32_t)(t - m->cmd_ms) >= (int32_t)per)
         {
             ze300_target_cnt(m->addr, m->tgt_cnt);
             m->cmd_ms = t;
         }
-        else if ((int32_t)(t - m->brk_ms) >= (int32_t)CMD_REPEAT_MS)
+        else if ((int32_t)(t - m->brk_ms) >= (int32_t)per)
         {
             brake(m, 0);           /* 保持松闸, 防之前松闸帧丢了刹死 */
             m->brk_ms = t;
@@ -644,6 +620,14 @@ static void mot_st_machine(MOT *m)
             uint32_t hold = m->first_hold ? (uint32_t)HOLD_ZERO_MS : (uint32_t)AUTO_INTERVAL_MS;
             m->first_hold = 0;           /* 只有开机那次回零要多保持5s */
             brake(m, 1);
+            /* 动作结束后各补一帧(一次性, 不是周期轮询):
+             *   0xA2 —— m->spd_x100 会冻在"最后一个非零值"上, gN_spd_rpm 看着像电机还在转,
+             *           停下来读一帧让它归零;
+             *   0xAE —— 空闲时不发状态回读, 靠这一帧刷新 gN_fault / gN_run_mode / gN_bus_v
+             *           (驱动器真出了故障, 下一次动作超时收场时就能看见故障码)。
+             * 两帧 StdId 相同, can_send 会自动隔开 g_dbg_frame_gap(1ms)。 */
+            ze300_read_spd(m->addr);
+            ze300_read_status(m->addr);
             m->st = 0;
             m->move_cycles++;
             m->auto_next_ms = t + hold;  /* 到位后再等 hold 才给下一个随机位置 */
@@ -652,11 +636,16 @@ static void mot_st_machine(MOT *m)
     }
 }
 
-/* ---------------- 参数管理器(每台独立: 每100ms只做一件事) ----------------
+/* ---------------- 参数管理器(每台独立: 每 RD_PERIOD_MS 只做一件事) ----------------
  * 加减速/限速/限流(D0/D1/B2/B3): 目标一变就下发, 不依赖驱动是否回读;
  * 若回读可用, 发现驱动值不符会自愈再发一次。
  * PID(B6~B9): 仍要先收到一次回读把驱动现值灌进目标, 才允许在线写(避免误写成0)。
- * 没有要写的就轮询读下一条, 让 gN_cfg_* 能刷新。 */
+ * 没有要写的就轮询读下一条, 让 gN_cfg_* 能刷新。
+ *
+ * 【周期**绝不为 0**】这个函数每拍都被调用, 周期 0 会让它每拍都冲进来, 底部那句
+ * "没有要写的就读下一条" 就变成 200 帧/秒 —— 方向正好反了。
+ * 代价: RD_PERIOD_MS=2000ms, 一轮 8 条要走 16 秒, 所以在线改 PID(LinkScope 写
+ * gN_pid_*)之后要等十几秒才真正下发到驱动器, 不是没生效。想快就调小 RD_PERIOD_MS。 */
 static void mot_manager(MOT *m)
 {
     static const uint8_t rd_cmds[8] =
@@ -665,7 +654,7 @@ static void mot_manager(MOT *m)
     int32_t want_acc, want_dec, want_vmax, want_iq, rpm_lim;
     uint32_t now = g_run_ms;
 
-    if (now - m->last_rd_ms < RD_PERIOD_MS) return;
+    if (now - m->last_rd_ms < (uint32_t)RD_PERIOD_MS) return;
     m->last_rd_ms = now;
 
     /* 各参数目标值(x0.01 或 mA) */
@@ -721,7 +710,8 @@ static void mot_manager(MOT *m)
         }
     }
 
-    if (!sent)   /* 没有要写的, 就读下一条(轮询, 刷新 gN_cfg_*) */
+    /* 没有要写的, 就读下一条(轮询, 刷新 gN_cfg_*)。周期绝不能是 0, 见函数头注释 */
+    if (!sent)
     {
         uint8_t c = rd_cmds[m->rd_idx];
         m->rd_idx = (m->rd_idx + 1) % 8;
@@ -786,8 +776,6 @@ static void sync_out(MOT *m)
     volatile uint8_t *p_brk, *p_auto;
     volatile float   *p_pos_kp, *p_pos_ki, *p_vel_kp, *p_vel_ki, *p_lim_rpm, *p_lim_a;
     volatile float   *p_ckp, *p_cki, *p_cvk, *p_cvi, *p_clr, *p_cla;
-    volatile uint8_t  *p_bsw, *p_lastcmd;
-    volatile uint32_t *p_rxce, *p_rxda, *p_txok, *p_txfail;
 
     if (m->addr == MOT1_ADDR)
     {
@@ -801,8 +789,6 @@ static void sync_out(MOT *m)
         p_lim_rpm=&g1_pid_pos_lim_rpm; p_lim_a=&g1_pid_vel_lim_A;
         p_ckp=&g1_cur_pos_kp; p_cki=&g1_cur_pos_ki; p_cvk=&g1_cur_vel_kp; p_cvi=&g1_cur_vel_ki;
         p_clr=&g1_cur_pos_lim_rpm; p_cla=&g1_cur_vel_lim_A;
-        p_bsw=&g1_brk_sw; p_lastcmd=&g1_rx_lastcmd;
-        p_rxce=&g1_rx_ce; p_rxda=&g1_rx_da; p_txok=&g1_tx_ok; p_txfail=&g1_tx_fail;
     }
     else
     {
@@ -816,8 +802,6 @@ static void sync_out(MOT *m)
         p_lim_rpm=&g2_pid_pos_lim_rpm; p_lim_a=&g2_pid_vel_lim_A;
         p_ckp=&g2_cur_pos_kp; p_cki=&g2_cur_pos_ki; p_cvk=&g2_cur_vel_kp; p_cvi=&g2_cur_vel_ki;
         p_clr=&g2_cur_pos_lim_rpm; p_cla=&g2_cur_vel_lim_A;
-        p_bsw=&g2_brk_sw; p_lastcmd=&g2_rx_lastcmd;
-        p_rxce=&g2_rx_ce; p_rxda=&g2_rx_da; p_txok=&g2_tx_ok; p_txfail=&g2_tx_fail;
     }
 
     *p_now = m->now_cnt;  *p_tgt = m->tgt_cnt;  *p_base = m->base_cnt;
@@ -837,23 +821,19 @@ static void sync_out(MOT *m)
     *p_cvk = m->rb_vkp; *p_cvi = m->rb_vki;
     *p_clr = (float)m->cfg_vmax_x100 * 0.01f;
     *p_cla = (float)m->cfg_iq_ma    * 0.001f;
-    *p_bsw = m->brk_sw; *p_lastcmd = m->rx_lastcmd;
-    *p_rxce = m->rx_ce; *p_rxda = m->rx_da;
-    *p_txok = m->tx_ok; *p_txfail = m->tx_fail;
 }
 
 /* ---------------- USART2 回传(VOFA+ JustFloat, ~50Hz) ----------------
- * 帧 = 16×float 小端 + 帧尾 00 00 80 7F
+ * 帧 = UART_TX_CHANNELS(=18)×float 小端 + 帧尾 00 00 80 7F
  * 通道1-6 : 两电机各 目标角°/实际角°/速度rpm
- * 通道7-8 : 串口诊断 收到字节数 / 已执行指令条数
+ * 通道7-8 : 串口诊断 收到字节数 / 已执行指令条数(通道8 涨了 = 下行指令被执行了)
  * 通道9-12: 两电机 状态机st / 抱闸(合=1松=0) —— 判断两台是否同时启动
  * 通道13-16: 两电机 运行模式(0关1压2流3速4位) / 故障码(0=正常)
  * 通道17-18: 两电机 驱动器母线电压(V) —— 判断是不是供电被拉垮
- * 通道19-20: 两电机 驱动器回读的抱闸开关状态(0断开 1闭合, 255=没读到) —— 命令是否真执行了
- * 通道21-22: 两电机 对 0xCE(抱闸) 的应答条数 —— 不涨=抱闸命令没到/驱动没理
- * 通道23-24: 两电机 对 0xDA(目标) 的应答条数 —— 不涨=目标命令没到/驱动没理
- * 通道25-26: 全局 CAN 发送失败帧数 / StdId 对不上的收包数
- * 通道27-28: CAN 发送错误计数 TEC(255=BUS-OFF) / 接收错误计数 REC
+ * 【通道13-18 的刷新时机】空闲时不发状态回读, 这三对只在**每次动作结束时**读一帧 0xAE,
+ *   所以动作之间它们不变, 不是卡死。要在空闲时也实时刷新, 就得加定时轮询(见 POS_POLL_MS 那段注释)。
+ * 【原来通道19-28 已删除】每台/全局的 CAN 诊断计数(0xCE/0xDA 应答条数、发送成功/失败、
+ *   邮箱等待、TEC/REC、StdId 对不上的收包)——排查"一台不动"时的临时量, 病根已定位并修好。
  * VOFA+ 选 JustFloat 协议即可画曲线, 不会把数据当文本堆进发送区 */
 static void uart_send_telemetry(void)
 {
@@ -868,12 +848,7 @@ static void uart_send_telemetry(void)
           (float)g1_st, (float)g2_st, (float)g1_brk, (float)g2_brk,
           (float)g1_run_mode, (float)g2_run_mode,
           (float)g1_fault,    (float)g2_fault,
-          g1_bus_v, g2_bus_v,
-          (float)g1_brk_sw,   (float)g2_brk_sw,
-          (float)g1_rx_ce,    (float)g2_rx_ce,
-          (float)g1_rx_da,    (float)g2_rx_da,
-          (float)g_can_tx_fail, (float)g_can_rx_unknown,
-          (float)g_can_tec, (float)g_can_rec };
+          g1_bus_v, g2_bus_v };
 
     for (i = 0; i < UART_TX_CHANNELS; i++)
     {
@@ -894,6 +869,21 @@ static void uart_send_telemetry(void)
 /* ---------------- USART2 下行指令 ----------------
  *  格式: "<电机1角度> <电机2角度>"(空格或逗号分隔, 度, 绝对位置, 相对各自零点)
  *  例:  30 -45   → 电机1去30°, 电机2去-45°, 同时下发 */
+
+/* 统一的"请求移动"入口: 串口指令和 LinkScope 改 gN_pos_cmd_deg 都走这里。
+ * 这里**只置标志**, 真正的 start_move 在主循环里做 —— 因为空闲时不轮询位置,
+ * m->now_cnt 可能是旧的, 而 start_move 会拿它发"保持当前位置"那帧, 会顶着闭合的
+ * 抱闸顶 60ms 才松闸(手拧过电机之后尤其明显)。主循环会先补一帧 0xA3 再启动。 */
+static void request_move(MOT *m, float deg)
+{
+    if (deg > 180.0f) deg = 180.0f;
+    else if (deg < -180.0f) deg = -180.0f;
+
+    m->auto_on   = 0;                   /* 手动接管, 关随机 */
+    m->want_deg  = deg;
+    m->want_move = 1u;
+}
+
 static void serial_set_target(uint8_t idx, float deg)
 {
     volatile float *gp;
@@ -905,10 +895,10 @@ static void serial_set_target(uint8_t idx, float deg)
     m = (idx == 0) ? &mot[0] : &mot[1];
     gp = (idx == 0) ? &g1_pos_cmd_deg : &g2_pos_cmd_deg;
 
-    m->auto_on = 0;                     /* 手动接管, 关随机 */
     *gp = deg;                          /* 写到 LinkScope 同源变量, 主循环 sync_in 会同步 */
-    m->last_cmd_deg = deg;              /* 记下, 免得主循环手动逻辑重复触发 */
-    start_move(m, (int32_t)(deg * 16384.0f / 360.0f));  /* 立即执行(运动中也会立刻改目标) */
+    m->pos_cmd_deg  = deg;
+    m->last_cmd_deg = deg;              /* 记下, 免得主循环手动逻辑又触发一次 */
+    request_move(m, deg);               /* 真正的启动在主循环里 */
     g_uart_cmd_cnt++;                   /* 诊断: 成功执行一条指令就+1 */
 }
 
@@ -952,6 +942,7 @@ static void serial_execute(const char *line)
     int only = -1;                          /* -1=两台; 0=只1号; 1=只2号 */
 
     while (*p == ' ' || *p == '\t') p++;
+
     if (*p == 'm' || *p == 'M')             /* 前缀 m1 / m2 */
     {
         if      (p[1] == '1') { only = 0; p += 2; }
@@ -1064,16 +1055,10 @@ void CAN_Motor_Call_Back(Struct_CAN_Rx_Buffer *Rx_Buffer)
     const uint8_t *d = Rx_Buffer->Data;
     MOT *m = mot_of_stdid(Rx_Buffer->Header.StdId);
 
-    if (m == 0) { g_can_rx_unknown++; return; }   /* 诊断: StdId 对不上, 帧被丢弃 */
+    if (m == 0) return;                          /* StdId 不是 1/2 的帧, 路由不上, 丢弃 */
     m->rx_cnt++;
-    m->rx_lastcmd = d[0];                          /* 诊断: 它在回应哪条命令 */
 
-    if (d[0] == 0xCE)                                              /* 抱闸开关状态回读 */
-    {
-        m->brk_sw = d[1];
-        m->rx_ce++;
-    }
-    else if (d[0] == 0xDA) { m->now_cnt = get_i32le(&d[3]); m->rx_da++; }
+    if (d[0] == 0xDA) { m->now_cnt = get_i32le(&d[3]); }
     else if (d[0] == 0xAE)                                         /* 母线电压/运行模式/故障码 */
     {
         m->bus_v    = (uint16_t)(d[1] | ((uint16_t)d[2] << 8));
@@ -1108,7 +1093,6 @@ int main(void)
     uint32_t w1, w2;
     int need1, need2, need_erase;
     static uint32_t uart_last_ms = 0;   /* 串口回传节拍 */
-    static uint32_t can_diag_ms = 0;    /* CAN 错误状态采样节拍 */
 
     /* 填电机固定参数(开中断前先设好, 避免漏收早到的回包) */
     for (i = 0; i < MOT_COUNT; i++)
@@ -1233,30 +1217,29 @@ int main(void)
             /* 派生量: 度 / rpm (角度相对零点归一化±180) */
             mot_derive(m);
 
-            /* 参数管理器(每机每100ms只发一条) */
+            /* 参数管理器(每 RD_PERIOD_MS 一条) */
             mot_manager(m);
 
-            /* 定期读实际位置(20ms)。每4拍把"读位置"换成"读速度"(≈每80ms),
+            /* 运动中定期读实际位置: 每 POS_POLL_MS 一条, 每 SPD_POLL_EVERY 次换成一条读速度。
              * 二者**不在同一拍发**, 免得两帧贴在一起被驱动丢掉。
              * 相位必须每台独立(m->poll_idx): 之前用共用的 g_poll_phase, 因为两台
-             * 总是同一拍触发, 它的值在1号永远偶、2号永远奇 → **2号的速度从来没被读过**。 */
-            if (now - m->last_poll_ms >= POS_POLL_MS)
+             * 总是同一拍触发, 它的值在1号永远偶、2号永远奇 → **2号的速度从来没被读过**。
+             *
+             * 空闲(m->st==0)时一帧都不发, 让总线安静 —— 此时只剩参数回读那一帧。
+             * 运动中**必须**保留 —— 到位判定 err = local_now_cnt(m) - local_tgt 全靠
+             * m->now_cnt, 而它只由 0xA3/0xDA 回包更新。停了就永远判不到位, 只能等
+             * ARRIVE_MAX_MS(30秒)兜底。 */
+            if (m->st != 0 && now - m->last_poll_ms >= (uint32_t)POS_POLL_MS)
             {
                 m->last_poll_ms = now;
                 m->poll_idx++;
-                if ((m->poll_idx & 3u) == 0u) ze300_read_spd(m->addr);
-                else                          ze300_read_pos(m->addr);
+                if ((m->poll_idx % SPD_POLL_EVERY) == 0u) ze300_read_spd(m->addr);
+                else                                      ze300_read_pos(m->addr);
             }
 
-            /* 每 300ms 轮一次驱动器状态: 0xAE(运行模式/故障码/母线) 与 0xCE 0xFF(抱闸开关回读)
-             * 交替发, 不同一时刻连发两帧 —— 驱动器对连发帧只回第一条 */
-            if (now - m->last_stat_ms >= 300)
-            {
-                m->last_stat_ms = now;
-                if (m->stat_alt) ze300_read_brake(m->addr);
-                else             ze300_read_status(m->addr);
-                m->stat_alt ^= 1u;
-            }
+            /* 状态回读(0xAE: 运行模式/故障码/母线电压)不在这里定期发 —— 只在动作结束时
+             * 由 mot_st_machine 的 case 4 补一帧。想在空闲时也实时刷新 gN_fault,
+             * 就在这儿加一个定时器按周期发 ze300_read_status(m->addr)。 */
 
             mot_st_machine(m);
 
@@ -1265,22 +1248,31 @@ int main(void)
             if (m->pos_cmd_deg != m->last_cmd_deg)
             {
                 m->last_cmd_deg = m->pos_cmd_deg;
-                m->auto_on = 0;                     /* 手动接管, 关随机 */
-                start_move(m, (int32_t)(m->pos_cmd_deg * 16384.0f / 360.0f));
+                request_move(m, m->pos_cmd_deg);
+            }
+
+            /* 统一在这里启动移动(串口指令和 LinkScope 都汇到 want_move)。
+             * 空闲时不轮询位置, now_cnt 可能是旧的, 而 start_move 会拿它发
+             * "保持当前位置"那帧, 会顶着闭合的抱闸顶 60ms。所以先补一帧 0xA3,
+             * 推迟一拍再启动(回包 ~200us 就到, 一拍 5ms 足够)。 */
+            if (m->want_move)
+            {
+                if (m->want_move == 1u)
+                {
+                    m->want_move = 2u;              /* 本拍只补一帧位置 */
+                    m->last_poll_ms = now;
+                    ze300_read_pos(m->addr);
+                }
+                else
+                {
+                    m->want_move = 0u;
+                    m->auto_on = 0;                 /* 手动接管, 关随机 */
+                    start_move(m, (int32_t)(m->want_deg * 16384.0f / 360.0f));
+                }
             }
 
             /* 状态量抄给 LinkScope */
             sync_out(m);
-        }
-
-        /* CAN 控制器错误状态(每200ms): TEC 涨到 255 就是 BUS-OFF, 那时所有帧都发不出去 */
-        if (now - can_diag_ms >= 200)
-        {
-            can_diag_ms = now;
-            g_can_esr = hcan1.Instance->ESR;
-            g_can_tec = (g_can_esr >> 16) & 0xFFu;
-            g_can_rec = (g_can_esr >> 24) & 0xFFu;
-            g_can_err = (uint32_t)HAL_CAN_GetError(&hcan1);
         }
 
         /* 串口回传电机信息(~50Hz) */

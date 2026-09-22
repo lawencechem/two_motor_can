@@ -19,11 +19,6 @@
 
 /* Private variables ---------------------------------------------------------*/
 
-/* 诊断计数(定义在 main.c, 这里累加) */
-extern volatile uint32_t g_can_tx_ok;
-extern volatile uint32_t g_can_tx_fail;
-extern volatile uint32_t g_can_tx_waitful;
-
 Struct_CAN_Manage_Object CAN1_Manage_Object = {0};
 Struct_CAN_Manage_Object CAN2_Manage_Object = {0};
 
@@ -149,11 +144,7 @@ uint8_t CAN_Send_Data(CAN_HandleTypeDef *hcan, uint16_t ID, uint8_t *Data, uint1
     t0 = HAL_GetTick();
     while (HAL_CAN_GetTxMailboxesFreeLevel(hcan) == 0)
     {
-        if (HAL_GetTick() - t0 > 5)
-        {
-            g_can_tx_waitful++;              /* 诊断: 等了 5ms 还是没空邮箱 */
-            break;
-        }
+        if (HAL_GetTick() - t0 > 5) break;   /* 等超过 5ms 就发(这一帧多半会失败, 别死等) */
     }
 
     tx_header.StdId = ID;
@@ -162,12 +153,7 @@ uint8_t CAN_Send_Data(CAN_HandleTypeDef *hcan, uint16_t ID, uint8_t *Data, uint1
     tx_header.RTR = 0;
     tx_header.DLC = Length;
 
-    {
-        HAL_StatusTypeDef st = HAL_CAN_AddTxMessage(hcan, &tx_header, Data, &used_mailbox);
-        if (st == HAL_OK) g_can_tx_ok++;
-        else              g_can_tx_fail++;   /* 诊断: 帧被丢弃(邮箱满/总线错误) */
-        return (uint8_t)st;
-    }
+    return (uint8_t)HAL_CAN_AddTxMessage(hcan, &tx_header, Data, &used_mailbox);
 }
 
 /**
